@@ -2,12 +2,12 @@ import os, sys
 sys.path.append(os.getcwd())
 
 import time
-import tflib as lib
-import tflib.save_images
-import tflib.mnist
-import tflib.cifar10
-import tflib.plot
-import tflib.inception_score
+#import tflib as lib
+#import tflib.save_images
+#import tflib.mnist
+#import tflib.cifar10
+#import tflib.plot
+#import tflib.inception_score
 
 import numpy as np
 
@@ -17,11 +17,14 @@ import torchvision
 from torch import nn
 from torch import autograd
 from torch import optim
+from torch.utils.data import DataLoader
+
+import torchvision.datasets as datasets
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
 # extracted files here!
-DATA_DIR = 'cifar-10-batches-py/'
+DATA_DIR = '/data/datasets/cifar10'
 if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_cifar.py!')
 
@@ -32,6 +35,7 @@ CRITIC_ITERS = 5 # How many critic iterations per generator iteration
 BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_DIM = 3072 # Number of pixels in CIFAR10 (3*32*32)
+PRINT_ITER = 10 # How often to print to screen
 
 
 class Generator(nn.Module):
@@ -144,10 +148,12 @@ def generate_image(frame, netG):
     noisev = autograd.Variable(fixed_noise_128, volatile=True)
     samples = netG(noisev)
     samples = samples.view(-1, 3, 32, 32)
-    samples = samples.mul(0.5).add(0.5)
-    samples = samples.cpu().data.numpy()
+    #samples = samples.mul(0.5).add(0.5)
+    #samples = samples.cpu().data.numpy()
+    filename = os.path.join("cifar10_samples", str(frame+1) + ".jpg")
+    torchvision.utils.save_image(samples.data.cpu(), filename, normalize=True)
 
-    lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
+    #lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
 
 # For calculating inception score
 def get_inception_score(G, ):
@@ -162,20 +168,25 @@ def get_inception_score(G, ):
     all_samples = np.concatenate(all_samples, axis=0)
     all_samples = np.multiply(np.add(np.multiply(all_samples, 0.5), 0.5), 255).astype('int32')
     all_samples = all_samples.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
-    return lib.inception_score.get_inception_score(list(all_samples))
+    #return lib.inception_score.get_inception_score(list(all_samples))
 
 # Dataset iterator
-train_gen, dev_gen = lib.cifar10.load(BATCH_SIZE, data_dir=DATA_DIR)
-def inf_train_gen():
-    while True:
-        for images, target in train_gen():
-            # yield images.astype('float32').reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
-            yield images
-gen = inf_train_gen()
 preprocess = torchvision.transforms.Compose([
                                torchvision.transforms.ToTensor(),
                                torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ])
+def inf_train_gen():
+    dset = datasets.CIFAR10(DATA_DIR, train=True, transform=preprocess)
+    loader = DataLoader(dset, batch_size=BATCH_SIZE, shuffle=True, 
+                                         num_workers=4, pin_memory=use_cuda)
+    while True:
+        for (x, _) in loader:
+            yield x
+
+gen = inf_train_gen()
+dev_loader = DataLoader(datasets.CIFAR10(DATA_DIR, train=False, transform=preprocess),
+                        batch_size=BATCH_SIZE, shuffle=False,
+                        num_workers=4, pin_memory=use_cuda)
 
 for iteration in xrange(ITERS):
     start_time = time.time()
@@ -185,12 +196,15 @@ for iteration in xrange(ITERS):
     for p in netD.parameters():  # reset requires_grad
         p.requires_grad = True  # they are set to False below in netG update
     for i in xrange(CRITIC_ITERS):
-        _data = gen.next()
+        #_data = gen.next()
+        real_data = gen.next()
+        if real_data.shape[0] != BATCH_SIZE:
+            real_data = gen.next()
         netD.zero_grad()
 
         # train with real
-        _data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
-        real_data = torch.stack([preprocess(item) for item in _data])
+        #_data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
+        #real_data = torch.stack([preprocess(item) for item in _data])
 
         if use_cuda:
             real_data = real_data.cuda(gpu)
@@ -242,24 +256,26 @@ for iteration in xrange(ITERS):
     G_cost = -G
     optimizerG.step()
 
+    if iteration % PRINT_ITER == PRINT_ITER-1:
+        print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
+              D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
+              Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
+
     # Write logs and save samples
-    lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
-    lib.plot.plot('./tmp/cifar10/time', time.time() - start_time)
-    lib.plot.plot('./tmp/cifar10/train gen cost', G_cost.cpu().data.numpy())
-    lib.plot.plot('./tmp/cifar10/wasserstein distance', Wasserstein_D.cpu().data.numpy())
+    #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
+    #lib.plot.plot('./tmp/cifar10/time', time.time() - start_time)
+    #lib.plot.plot('./tmp/cifar10/train gen cost', G_cost.cpu().data.numpy())
+    #lib.plot.plot('./tmp/cifar10/wasserstein distance', Wasserstein_D.cpu().data.numpy())
 
     # Calculate inception score every 1K iters
-    if False and iteration % 1000 == 999:
-        inception_score = get_inception_score(netG)
-        lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
+    #if False and iteration % 1000 == 999:
+        #inception_score = get_inception_score(netG)
+        #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
 
     # Calculate dev loss and generate samples every 100 iters
     if iteration % 100 == 99:
         dev_disc_costs = []
-        for images, _ in dev_gen():
-            images = images.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
-            imgs = torch.stack([preprocess(item) for item in images])
-
+        for imgs, _ in dev_loader:
             # imgs = preprocess(images)
             if use_cuda:
                 imgs = imgs.cuda(gpu)
@@ -268,11 +284,12 @@ for iteration in xrange(ITERS):
             D = netD(imgs_v)
             _dev_disc_cost = -D.mean().cpu().data.numpy()
             dev_disc_costs.append(_dev_disc_cost)
-        lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
+        print('Test [%d/%d] Avg D: %.4f' % (iteration+1, ITERS, np.mean(dev_disc_costs)))
+        #lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
 
         generate_image(iteration, netG)
 
     # Save logs every 100 iters
-    if (iteration < 5) or (iteration % 100 == 99):
-        lib.plot.flush()
-    lib.plot.tick()
+    #if (iteration < 5) or (iteration % 100 == 99):
+    #    lib.plot.flush()
+    #lib.plot.tick()
