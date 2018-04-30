@@ -96,200 +96,204 @@ class Discriminator(nn.Module):
         output = self.linear(output)
         return output
 
-netG = Generator()
-netD = Discriminator()
-print netG
-print netD
+def main():
+    netG = Generator()
+    netD = Discriminator()
+    print netG
+    print netD
 
-use_cuda = torch.cuda.is_available()
-if use_cuda:
-    gpu = 0
-if use_cuda:
-    netD = netD.cuda(gpu)
-    netG = netG.cuda(gpu)
-
-one = torch.FloatTensor([1])
-mone = one * -1
-if use_cuda:
-    one = one.cuda(gpu)
-    mone = mone.cuda(gpu)
-
-optimizerD = optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.9))
-optimizerG = optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.9))
-
-def calc_gradient_penalty(netD, real_data, fake_data):
-    # print "real_data: ", real_data.size(), fake_data.size()
-    alpha = torch.rand(BATCH_SIZE, 1)
-    alpha = alpha.expand(BATCH_SIZE, real_data.nelement()/BATCH_SIZE).contiguous().view(BATCH_SIZE, 3, 32, 32)
-    alpha = alpha.cuda(gpu) if use_cuda else alpha
-
-    interpolates = alpha * real_data + ((1 - alpha) * fake_data)
-
+    use_cuda = torch.cuda.is_available()
     if use_cuda:
-        interpolates = interpolates.cuda(gpu)
-    interpolates = autograd.Variable(interpolates, requires_grad=True)
-
-    disc_interpolates = netD(interpolates)
-
-    gradients = autograd.grad(outputs=disc_interpolates, inputs=interpolates,
-                              grad_outputs=torch.ones(disc_interpolates.size()).cuda(gpu) if use_cuda else torch.ones(
-                                  disc_interpolates.size()),
-                              create_graph=True, retain_graph=True, only_inputs=True)[0]
-    gradients = gradients.view(gradients.size(0), -1)
-
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * LAMBDA
-    return gradient_penalty
-
-# For generating samples
-def generate_image(frame, netG):
-    fixed_noise_128 = torch.randn(128, 128)
+        gpu = 0
     if use_cuda:
-        fixed_noise_128 = fixed_noise_128.cuda(gpu)
-    noisev = autograd.Variable(fixed_noise_128, volatile=True)
-    samples = netG(noisev)
-    samples = samples.view(-1, 3, 32, 32)
-    #samples = samples.mul(0.5).add(0.5)
-    #samples = samples.cpu().data.numpy()
-    filename = os.path.join("cifar10_samples", str(frame+1) + ".jpg")
-    torchvision.utils.save_image(samples.data.cpu(), filename, normalize=True)
+        netD = netD.cuda(gpu)
+        netG = netG.cuda(gpu)
 
-    #lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
+    one = torch.FloatTensor([1])
+    mone = one * -1
+    if use_cuda:
+        one = one.cuda(gpu)
+        mone = mone.cuda(gpu)
 
-# For calculating inception score
-def get_inception_score(G, ):
-    all_samples = []
-    for i in xrange(10):
-        samples_100 = torch.randn(100, 128)
+    optimizerD = optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.9))
+    optimizerG = optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.9))
+
+    def calc_gradient_penalty(netD, real_data, fake_data):
+        # print "real_data: ", real_data.size(), fake_data.size()
+        alpha = torch.rand(BATCH_SIZE, 1)
+        alpha = alpha.expand(BATCH_SIZE, real_data.nelement()/BATCH_SIZE).contiguous().view(BATCH_SIZE, 3, 32, 32)
+        alpha = alpha.cuda(gpu) if use_cuda else alpha
+
+        interpolates = alpha * real_data + ((1 - alpha) * fake_data)
+
         if use_cuda:
-            samples_100 = samples_100.cuda(gpu)
-        samples_100 = autograd.Variable(samples_100, volatile=True)
-        all_samples.append(G(samples_100).cpu().data.numpy())
+            interpolates = interpolates.cuda(gpu)
+        interpolates = autograd.Variable(interpolates, requires_grad=True)
 
-    all_samples = np.concatenate(all_samples, axis=0)
-    all_samples = np.multiply(np.add(np.multiply(all_samples, 0.5), 0.5), 255).astype('int32')
-    all_samples = all_samples.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
-    #return lib.inception_score.get_inception_score(list(all_samples))
+        disc_interpolates = netD(interpolates)
 
-# Dataset iterator
-preprocess = torchvision.transforms.Compose([
-                               torchvision.transforms.ToTensor(),
-                               torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                           ])
-def inf_train_gen():
-    dset = datasets.CIFAR10(DATA_DIR, train=True, transform=preprocess)
-    loader = DataLoader(dset, batch_size=BATCH_SIZE, shuffle=True, 
-                                         num_workers=4, pin_memory=use_cuda)
-    while True:
-        for (x, _) in loader:
-            yield x
+        gradients = autograd.grad(outputs=disc_interpolates, inputs=interpolates,
+                                  grad_outputs=torch.ones(disc_interpolates.size()).cuda(gpu) if use_cuda else torch.ones(
+                                      disc_interpolates.size()),
+                                  create_graph=True, retain_graph=True, only_inputs=True)[0]
+        gradients = gradients.view(gradients.size(0), -1)
 
-gen = inf_train_gen()
-dev_loader = DataLoader(datasets.CIFAR10(DATA_DIR, train=False, transform=preprocess),
-                        batch_size=BATCH_SIZE, shuffle=False,
-                        num_workers=4, pin_memory=use_cuda)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * LAMBDA
+        return gradient_penalty
 
-for iteration in xrange(ITERS):
-    start_time = time.time()
-    ############################
-    # (1) Update D network
-    ###########################
-    for p in netD.parameters():  # reset requires_grad
-        p.requires_grad = True  # they are set to False below in netG update
-    for i in xrange(CRITIC_ITERS):
-        #_data = gen.next()
-        real_data = gen.next()
-        if real_data.shape[0] != BATCH_SIZE:
+    # For generating samples
+    def generate_image(frame, netG):
+        fixed_noise_128 = torch.randn(128, 128)
+        if use_cuda:
+            fixed_noise_128 = fixed_noise_128.cuda(gpu)
+        noisev = autograd.Variable(fixed_noise_128, volatile=True)
+        samples = netG(noisev)
+        samples = samples.view(-1, 3, 32, 32)
+        #samples = samples.mul(0.5).add(0.5)
+        #samples = samples.cpu().data.numpy()
+        filename = os.path.join("cifar10_samples", str(frame+1) + ".jpg")
+        torchvision.utils.save_image(samples.data.cpu(), filename, normalize=True)
+
+        #lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
+
+    # For calculating inception score
+    def get_inception_score(G, ):
+        all_samples = []
+        for i in xrange(10):
+            samples_100 = torch.randn(100, 128)
+            if use_cuda:
+                samples_100 = samples_100.cuda(gpu)
+            samples_100 = autograd.Variable(samples_100, volatile=True)
+            all_samples.append(G(samples_100).cpu().data.numpy())
+
+        all_samples = np.concatenate(all_samples, axis=0)
+        all_samples = np.multiply(np.add(np.multiply(all_samples, 0.5), 0.5), 255).astype('int32')
+        all_samples = all_samples.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
+        #return lib.inception_score.get_inception_score(list(all_samples))
+
+    # Dataset iterator
+    preprocess = torchvision.transforms.Compose([
+                                   torchvision.transforms.ToTensor(),
+                                   torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                               ])
+    def inf_train_gen():
+        dset = datasets.CIFAR10(DATA_DIR, train=True, transform=preprocess)
+        loader = DataLoader(dset, batch_size=BATCH_SIZE, shuffle=True, 
+                                             num_workers=4, pin_memory=use_cuda)
+        while True:
+            for (x, _) in loader:
+                yield x
+
+    gen = inf_train_gen()
+    dev_loader = DataLoader(datasets.CIFAR10(DATA_DIR, train=False, transform=preprocess),
+                            batch_size=BATCH_SIZE, shuffle=False,
+                            num_workers=4, pin_memory=use_cuda)
+
+    for iteration in xrange(ITERS):
+        start_time = time.time()
+        ############################
+        # (1) Update D network
+        ###########################
+        for p in netD.parameters():  # reset requires_grad
+            p.requires_grad = True  # they are set to False below in netG update
+        for i in xrange(CRITIC_ITERS):
+            #_data = gen.next()
             real_data = gen.next()
-        netD.zero_grad()
+            if real_data.shape[0] != BATCH_SIZE:
+                real_data = gen.next()
+            netD.zero_grad()
 
-        # train with real
-        #_data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
-        #real_data = torch.stack([preprocess(item) for item in _data])
+            # train with real
+            #_data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
+            #real_data = torch.stack([preprocess(item) for item in _data])
 
-        if use_cuda:
-            real_data = real_data.cuda(gpu)
-        real_data_v = autograd.Variable(real_data)
+            if use_cuda:
+                real_data = real_data.cuda(gpu)
+            real_data_v = autograd.Variable(real_data)
 
-        # import torchvision
-        # filename = os.path.join("test_train_data", str(iteration) + str(i) + ".jpg")
-        # torchvision.utils.save_image(real_data, filename)
+            # import torchvision
+            # filename = os.path.join("test_train_data", str(iteration) + str(i) + ".jpg")
+            # torchvision.utils.save_image(real_data, filename)
 
-        D_real = netD(real_data_v)
-        D_real = D_real.mean()
-        D_real.backward(mone)
+            D_real = netD(real_data_v)
+            D_real = D_real.mean()
+            D_real.backward(mone)
 
-        # train with fake
+            # train with fake
+            noise = torch.randn(BATCH_SIZE, 128)
+            if use_cuda:
+                noise = noise.cuda(gpu)
+            noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
+            fake = autograd.Variable(netG(noisev).data)
+            inputv = fake
+            D_fake = netD(inputv)
+            D_fake = D_fake.mean()
+            D_fake.backward(one)
+
+            # train with gradient penalty
+            gradient_penalty = calc_gradient_penalty(netD, real_data_v.data, fake.data)
+            gradient_penalty.backward()
+
+            # print "gradien_penalty: ", gradient_penalty
+
+            D_cost = D_fake - D_real + gradient_penalty
+            Wasserstein_D = D_real - D_fake
+            optimizerD.step()
+        ############################
+        # (2) Update G network
+        ###########################
+        for p in netD.parameters():
+            p.requires_grad = False  # to avoid computation
+        netG.zero_grad()
+
         noise = torch.randn(BATCH_SIZE, 128)
         if use_cuda:
             noise = noise.cuda(gpu)
-        noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
-        fake = autograd.Variable(netG(noisev).data)
-        inputv = fake
-        D_fake = netD(inputv)
-        D_fake = D_fake.mean()
-        D_fake.backward(one)
+        noisev = autograd.Variable(noise)
+        fake = netG(noisev)
+        G = netD(fake)
+        G = G.mean()
+        G.backward(mone)
+        G_cost = -G
+        optimizerG.step()
 
-        # train with gradient penalty
-        gradient_penalty = calc_gradient_penalty(netD, real_data_v.data, fake.data)
-        gradient_penalty.backward()
+        if iteration % PRINT_ITER == PRINT_ITER-1:
+            print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
+                  D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
+                  Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
 
-        # print "gradien_penalty: ", gradient_penalty
+        # Write logs and save samples
+        #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
+        #lib.plot.plot('./tmp/cifar10/time', time.time() - start_time)
+        #lib.plot.plot('./tmp/cifar10/train gen cost', G_cost.cpu().data.numpy())
+        #lib.plot.plot('./tmp/cifar10/wasserstein distance', Wasserstein_D.cpu().data.numpy())
 
-        D_cost = D_fake - D_real + gradient_penalty
-        Wasserstein_D = D_real - D_fake
-        optimizerD.step()
-    ############################
-    # (2) Update G network
-    ###########################
-    for p in netD.parameters():
-        p.requires_grad = False  # to avoid computation
-    netG.zero_grad()
+        # Calculate inception score every 1K iters
+        #if False and iteration % 1000 == 999:
+            #inception_score = get_inception_score(netG)
+            #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
 
-    noise = torch.randn(BATCH_SIZE, 128)
-    if use_cuda:
-        noise = noise.cuda(gpu)
-    noisev = autograd.Variable(noise)
-    fake = netG(noisev)
-    G = netD(fake)
-    G = G.mean()
-    G.backward(mone)
-    G_cost = -G
-    optimizerG.step()
+        # Calculate dev loss and generate samples every 100 iters
+        if iteration % 100 == 99:
+            dev_disc_costs = []
+            for imgs, _ in dev_loader:
+                # imgs = preprocess(images)
+                if use_cuda:
+                    imgs = imgs.cuda(gpu)
+                imgs_v = autograd.Variable(imgs, volatile=True)
 
-    if iteration % PRINT_ITER == PRINT_ITER-1:
-        print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
-              D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
-              Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
+                D = netD(imgs_v)
+                _dev_disc_cost = -D.mean().cpu().data.numpy()
+                dev_disc_costs.append(_dev_disc_cost)
+            print('Test [%d/%d] Avg D: %.4f' % (iteration+1, ITERS, np.mean(dev_disc_costs)))
+            #lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
 
-    # Write logs and save samples
-    #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
-    #lib.plot.plot('./tmp/cifar10/time', time.time() - start_time)
-    #lib.plot.plot('./tmp/cifar10/train gen cost', G_cost.cpu().data.numpy())
-    #lib.plot.plot('./tmp/cifar10/wasserstein distance', Wasserstein_D.cpu().data.numpy())
+            generate_image(iteration, netG)
 
-    # Calculate inception score every 1K iters
-    #if False and iteration % 1000 == 999:
-        #inception_score = get_inception_score(netG)
-        #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
+        # Save logs every 100 iters
+        #if (iteration < 5) or (iteration % 100 == 99):
+        #    lib.plot.flush()
+        #lib.plot.tick()
 
-    # Calculate dev loss and generate samples every 100 iters
-    if iteration % 100 == 99:
-        dev_disc_costs = []
-        for imgs, _ in dev_loader:
-            # imgs = preprocess(images)
-            if use_cuda:
-                imgs = imgs.cuda(gpu)
-            imgs_v = autograd.Variable(imgs, volatile=True)
-
-            D = netD(imgs_v)
-            _dev_disc_cost = -D.mean().cpu().data.numpy()
-            dev_disc_costs.append(_dev_disc_cost)
-        print('Test [%d/%d] Avg D: %.4f' % (iteration+1, ITERS, np.mean(dev_disc_costs)))
-        #lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
-
-        generate_image(iteration, netG)
-
-    # Save logs every 100 iters
-    #if (iteration < 5) or (iteration % 100 == 99):
-    #    lib.plot.flush()
-    #lib.plot.tick()
+if __name__ == '__main__':
+    main()
