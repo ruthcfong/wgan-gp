@@ -347,7 +347,7 @@ for iteration in xrange(ITERS):
     G_costs.append(G_cost.data.cpu().numpy()[0])
     W_diffs.append(Wasserstein_D.data.cpu().numpy()[0])
 
-    if iteration+1 % PRINT_ITER == 0:
+    if (iteration+1) % PRINT_ITER == 0:
         print('Train [%d/%d] D: %.4f G: %.4f W: %.4f T: %.4f' % (iteration+1, ITERS, 
               D_cost.data.cpu().numpy()[0], G_cost.data.cpu().numpy()[0],
               Wasserstein_D.data.cpu().numpy()[0], time.time() - start_time))
@@ -364,7 +364,7 @@ for iteration in xrange(ITERS):
         #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
 
     # Calculate dev loss and generate samples every 100 iters
-    if iteration+1 % 1000 == 0:
+    if (iteration+1) % 500 == 0:
         dev_disc_costs = []
         for imgs, _ in dev_loader:
             # imgs = preprocess(images)
