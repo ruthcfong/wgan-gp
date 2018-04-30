@@ -38,7 +38,7 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-RESULTS_DIR = 'cgan_cifar10'
+RESULTS_DIR = 'cgan_cifar10_z_linear'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -55,9 +55,13 @@ class Generator(nn.Module):
 
         assert(len(y_shape) == 4)
 
+        self.hidden_dim = hidden_dim
+
         self.prepare_z = nn.Sequential(
-                nn.ConvTranspose2d(z_dim, hidden_dim * 2, 4, stride=2),
-                nn.BatchNorm2d(hidden_dim * 2),
+                nn.Linear(z_dim, 2 * 4 * 4 * hidden_dim),
+                nn.BatchNorm2d(2 * 4 * 4 * hidden_dim),
+                #nn.ConvTranspose2d(z_dim, hidden_dim * 2, 4, stride=2),
+                #nn.BatchNorm2d(hidden_dim * 2),
                 nn.ReLU(inplace=True)
         )
 
@@ -100,9 +104,10 @@ class Generator(nn.Module):
         )
 
     def forward(self, z, y):
+        z = self.prepare_z(z)
+        z = z.view(-1, 2 * self.hidden_dim, 4, 4)
         if len(y.shape) == 2:
             y = y.unsqueeze(2).unsqueeze(3)
-        z = self.prepare_z(z)
         y = self.prepare_y(y)
         zy = torch.cat([z, y], 1)
         return self.features(zy)
@@ -215,7 +220,7 @@ def calc_gradient_penalty(netD, real_data, fake_data, y):
 
 # For generating samples
 def generate_image(frame, netG, y, real_data):
-    fixed_noise_128 = torch.randn(BATCH_SIZE, 128, 1, 1)
+    fixed_noise_128 = torch.randn(BATCH_SIZE, 128)
     if use_cuda:
         fixed_noise_128 = fixed_noise_128.cuda(gpu)
     noisev = autograd.Variable(fixed_noise_128, volatile=True)
@@ -233,8 +238,8 @@ def generate_samples(frame, netG, real_imgs, model):
     x = torch.FloatTensor(num_examples ** 2, real_imgs.shape[1], real_imgs.shape[2], real_imgs.shape[3])
     x = autograd.Variable(x.cuda() if use_cuda else x)
 
-    fixed_noise = torch.FloatTensor(num_examples, 128, 1, 1).normal_(0, 1)
-    z = torch.FloatTensor(num_examples ** 2, 128, 1, 1)
+    fixed_noise = torch.FloatTensor(num_examples, 128).normal_(0, 1)
+    z = torch.FloatTensor(num_examples ** 2, 128)
     z = autograd.Variable(z.cuda() if use_cuda else z)
 
     for i in range(num_examples):
@@ -263,6 +268,10 @@ def get_inception_score(G, ):
     all_samples = np.multiply(np.add(np.multiply(all_samples, 0.5), 0.5), 255).astype('int32')
     all_samples = all_samples.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
     #return lib.inception_score.get_inception_score(list(all_samples))
+
+D_costs = []
+G_costs = []
+W_diffs = []
 
 for iteration in xrange(ITERS):
     start_time = time.time()
@@ -297,7 +306,7 @@ for iteration in xrange(ITERS):
         D_real.backward(mone)
 
         # train with fake
-        noise = torch.randn(BATCH_SIZE, 128, 1, 1)
+        noise = torch.randn(BATCH_SIZE, 128)
         if use_cuda:
             noise = noise.cuda(gpu)
         noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
@@ -323,7 +332,7 @@ for iteration in xrange(ITERS):
         p.requires_grad = False  # to avoid computation
     netG.zero_grad()
 
-    noise = torch.randn(BATCH_SIZE, 128, 1, 1)
+    noise = torch.randn(BATCH_SIZE, 128)
     if use_cuda:
         noise = noise.cuda(gpu)
     noisev = autograd.Variable(noise)
@@ -334,10 +343,14 @@ for iteration in xrange(ITERS):
     G_cost = -G
     optimizerG.step()
 
+    D_costs.append(D_cost.data.cpu().numpy()[0])
+    G_costs.append(G_cost.data.cpu().numpy()[0])
+    W_diffs.append(Wasserstein_D.data.cpu().numpy()[0])
+
     if iteration+1 % PRINT_ITER == 0:
-        print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
-              D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
-              Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
+        print('Train [%d/%d] D: %.4f G: %.4f W: %.4f T: %.4f' % (iteration+1, ITERS, 
+              D_cost.data.cpu().numpy()[0], G_cost.data.cpu().numpy()[0],
+              Wasserstein_D.data.cpu().numpy()[0], time.time() - start_time))
 
     # Write logs and save samples
     #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
@@ -376,6 +389,9 @@ for iteration in xrange(ITERS):
                          'state_dict': netG.state_dict(), 
                          'optimizer': optimizerG.state_dict(),
                          'iteration': iteration+1,
+                         'G_costs': G_costs,
+                         'D_costs': D_costs,
+                         'W_diffs': W_diffs,
                          }, 
                          '%s/G_checkpoint.pth.tar' % RESULTS_DIR)
         save_checkpoint({
