@@ -15,13 +15,14 @@ import numpy as np
 import torch
 import torchvision
 from torch import nn
+import torch.nn.functional as F
 from torch import autograd
 from torch import optim
 from torch.utils.data import DataLoader
 
 import torchvision.datasets as datasets
 
-from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, DiversityLoss
+from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, DiversityLoss, ContrastiveLoss
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
@@ -38,10 +39,10 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-DIVERSITY_LAMBDA = 5e1# 1e2
+DIVERSITY_LAMBDA = 1e1# 1e2
 #NUM_DIVERSITY = 2
 REC_LAMBDA = 1e1
-RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1_logits_testing'
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_contrastive_dropout_1e1_rec_1e1_gan_adam_dense_vary_z_tracking_fixedd_3'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -153,31 +154,57 @@ class Discriminator(nn.Module):
         return output
 
 
+class DropoutAlways2d(nn.Module):
+    def __init__(self, p=0.5, inplace=False):
+        super(DropoutAlways2d, self).__init__()
+        self.p = p
+        self.inplace = inplace
+
+    def forward(self, input):
+        return F.dropout2d(input, self.p, True, self.inplace)
+
+
 class Matcher(nn.Module):
-    def __init__(self, x_dim=3, hidden_dim=128):
+    def __init__(self, x_dim=3, hidden_dim=128, p=0.2):
         super(Matcher, self).__init__()
 
         self.hidden_dim=hidden_dim
 
         main = nn.Sequential(
-            nn.Conv2d(x_dim*2, hidden_dim, 3, 2, padding=1),
-            nn.LeakyReLU(),
+            nn.Conv2d(x_dim, hidden_dim, 3, 2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(hidden_dim),
+            DropoutAlways2d(p),
             nn.Conv2d(hidden_dim, 2 * hidden_dim, 3, 2, padding=1),
-            nn.LeakyReLU(),
+            nn.ReLU(),
+            nn.BatchNorm2d(2 * hidden_dim),
+            DropoutAlways2d(p),
             nn.Conv2d(2 * hidden_dim, 4 * hidden_dim, 3, 2, padding=1),
-            nn.LeakyReLU(),
+            nn.ReLU(),
+            nn.BatchNorm2d(4 * hidden_dim),
+            DropoutAlways2d(p)
         )
 
         self.main = main
-        self.linear = nn.Linear(4*4*4*hidden_dim, 1)
+        self.linear = nn.Sequential(
+                nn.Linear(4*4*4*hidden_dim, 256),
+                nn.ReLU(True),
+                nn.Linear(256, 256),
+                nn.ReLU(True),
+                nn.Linear(256, 5)
+        )
         #self.sigmoid = nn.Sigmoid()
 
+    def forward_once(self, x):
+        x = self.main(x)
+        x = x.view(-1, 4*4*4*self.hidden_dim)
+        return self.linear(x)
+    #def forward(self, x1, x2):
+    #    input = torch.cat([x, x], 1)
     def forward(self, x1, x2):
-        input = torch.cat([x, x], 1)
-        output = self.main(input)
-        output = output.view(-1, 4*4*4*self.hidden_dim)
-        output = self.linear(output)
-        return output
+        y1 = self.forward_once(x1)
+        y2 = self.forward_once(x2)
+        return y1, y2 
         #return self.sigmoid(output)
 
 
@@ -221,7 +248,8 @@ if use_cuda:
 if DIVERSITY_LAMBDA > 0:
     netM = Matcher()
     optimizerM = optim.Adam(netM.parameters(), lr=1e-4, betas=(0.5, 0.9))
-    diversity_criterion = nn.BCEWithLogitsLoss()
+    #diversity_criterion = nn.BCEWithLogitsLoss()
+    diversity_criterion = ContrastiveLoss()
     if use_cuda:
         netM = netM.cuda(gpu)
         diversity_criterion = diversity_criterion.cuda(gpu)
@@ -288,7 +316,7 @@ def generate_image(frame, netG, y, real_data):
 
     #lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
 
-def generate_samples(frame, netG, real_imgs, model):
+def generate_samples(frame, netG, real_imgs, model, draw=True):
     num_examples = real_imgs.shape[0]
     x = torch.FloatTensor(num_examples ** 2, real_imgs.shape[1], real_imgs.shape[2], real_imgs.shape[3])
     x = autograd.Variable(x.cuda() if use_cuda else x)
@@ -306,12 +334,15 @@ def generate_samples(frame, netG, real_imgs, model):
     y = hook_get_acts(model, [BLOB], x)[0]
     gen_x = netG(z[num_examples:], y[num_examples:])
     x[num_examples:] = gen_x
-    filename = os.path.join(RESULTS_DIR, 'vary_z_%d.jpg' % (frame+1))
-    torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
-    if DEBUG:
-        writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), nrow=num_examples, normalize=True), frame)
-        x = x[num_examples:].view(num_examples, num_examples-1, x.shape[1], x.shape[2], x.shape[3])
-        writer.add_scalar('test/vary_z_D', torch.norm(x[:, 1:] - x[:, :-1]).data.cpu().numpy(), frame)
+    if draw:
+        filename = os.path.join(RESULTS_DIR, 'vary_z_%d.jpg' % (frame+1))
+        torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
+        if DEBUG:
+            writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), nrow=num_examples, normalize=True), frame)
+    else:
+        if DEBUG:
+            x = x[num_examples:].view(num_examples-1, num_examples, x.shape[1], x.shape[2], x.shape[3])
+            writer.add_scalar('test/vary_z_D', torch.norm(x[1:] - x[:-1]).data.cpu().numpy(), frame)
 
 # For calculating inception score
 def get_inception_score(G, ):
@@ -418,21 +449,28 @@ for iteration in xrange(ITERS):
         noisev2 = autograd.Variable(noise2)
         fake2 = netG(noisev2, y.detach())
 
-        diff_match_score = netM(fake1, fake2)
-        diff_target = autograd.Variable(torch.ones(*diff_match_score.shape).cuda(gpu) if use_cuda else
-                                   torch.ones(*diff_match_score.shape))
-        diff_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(diff_match_score, diff_target)
+        diff_o1, diff_o2 = netM(fake1, fake2)
+        diff_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(diff_o1, diff_o2, 1)
+        #diff_target = autograd.Variable(torch.ones(*diff_match_score.shape).cuda(gpu) if use_cuda else
+        #                           torch.ones(*diff_match_score.shape))
+        #diff_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(diff_match_score, diff_target)
         diff_loss.backward()
 
-        #fake1 = netG(noisev, y.detach())
-        same_match_score = netM(fake1, fake1)
-        same_target = autograd.Variable(torch.zeros(*diff_match_score.shape).cuda(gpu) if use_cuda else
-                                   torch.zeros(*diff_match_score.shape))
-        same_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(same_match_score, same_target)
+        noisev3 = autograd.Variable(torch.randn(BATCH_SIZE, 128, 1, 1).cuda(gpu) if use_cuda else
+                                    torch.randn(BATCH_SIZE, 128, 1, 1))
+        fake1 = netG(noisev1, y.detach())
+        #fake1_2 = netG(noisev, y.detach())
+        same_o1, same_o2 = netM(fake1, fake1)
+        same_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(same_o1, same_o2, 0)
+        #same_target = autograd.Variable(torch.zeros(*diff_match_score.shape).cuda(gpu) if use_cuda else
+        #                           torch.zeros(*diff_match_score.shape))
+        #same_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(same_match_score, same_target)
         same_loss.backward()
         if DEBUG and iteration % PRINT_ITER == 0:
-                writer.add_histogram('train/diff_output', diff_match_score.data.cpu().numpy(), iteration)
-                writer.add_histogram('train/same_output', same_match_score.data.cpu().numpy(), iteration)
+                #writer.add_histogram('train/diff_output', diff_match_score.data.cpu().numpy(), iteration)
+                #writer.add_histogram('train/same_output', same_match_score.data.cpu().numpy(), iteration)
+                writer.add_scalar('train/diff_loss', diff_loss.data.cpu().numpy(), iteration)
+                writer.add_scalar('train/same_loss', same_loss.data.cpu().numpy(), iteration)
 
         #diversity_loss = diff_loss + same_loss
         diversity_cost = diff_loss + same_loss
@@ -444,24 +482,26 @@ for iteration in xrange(ITERS):
 
     if DIVERSITY_LAMBDA > 0:
         netM.train()
+
         optimizerM.zero_grad()
 
         new_fake1 = fake1.detach()
         new_fake2 = fake2.detach()
-        diff_match_score = netM(new_fake1, new_fake2)
-        diff_loss = diversity_criterion(diff_match_score, diff_target)
-        diff_loss.backward()
+
+        diff_o1, diff_o2 = netM(new_fake1, new_fake2)
+        diff_match_loss = diversity_criterion(diff_o1, diff_o2, 1)
+        diff_match_loss.backward()
+
+        same_o1, same_o2 = netM(new_fake1, new_fake1)
+        same_match_loss = diversity_criterion(same_o1, same_o2, 0)
+        same_match_loss.backward()
+
+        match_loss = diff_match_loss + same_match_loss 
+
         if DEBUG and iteration % PRINT_ITER == 0:
-            writer.add_histogram('train/grad_weights', netM.main[0].weight.grad, iteration)
-
-        #fake1 = netG(noisev, y.detach())
-        same_match_score = netM(fake1.detach(), fake1.detach())
-        same_loss = diversity_criterion(same_match_score, same_target)
-        same_loss.backward()
-
-        match_loss = diff_loss + same_loss
-        #diversity_loss = diff_loss + same_loss
-        #diversity_cost = diff_loss + same_loss
+            writer.add_scalar('train/match_diff_loss', diff_match_loss.data.cpu().numpy(), iteration)
+            writer.add_scalar('train/match_same_loss', same_match_loss.data.cpu().numpy(), iteration)
+            #writer.add_histogram('train/grad_weights', netM.main[0].weight.grad, iteration)
 
         optimizerM.step()
 
@@ -494,6 +534,8 @@ for iteration in xrange(ITERS):
         #inception_score = get_inception_score(netG)
         #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
 
+    generate_samples(iteration, netG, real_data[:5], model, draw=False)
+
     # Calculate dev loss and generate samples every 100 iters
     if iteration % 100 == 0:
         dev_disc_costs = []
@@ -514,7 +556,7 @@ for iteration in xrange(ITERS):
         imgs_v = autograd.Variable(imgs.cuda() if use_cuda else imgs, volatile=True)
         y = hook_get_acts(model, [BLOB], imgs_v)[0]
         generate_image(iteration, netG, y, imgs_v)
-        generate_samples(iteration, netG, imgs_v[:20].data, model)
+        generate_samples(iteration, netG, imgs_v[:20].data, model, draw=True)
 
         save_checkpoint({
                          'state_dict': netG.state_dict(), 
