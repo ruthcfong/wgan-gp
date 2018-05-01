@@ -40,8 +40,8 @@ OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
 DIVERSITY_LAMBDA = 5e1# 1e2
 #NUM_DIVERSITY = 2
-REC_LAMBDA = 1e0
-RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e0_rec_1e0'
+REC_LAMBDA = 1e1
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -170,14 +170,15 @@ class Matcher(nn.Module):
 
         self.main = main
         self.linear = nn.Linear(4*4*4*hidden_dim, 1)
-        self.sigmoid = nn.Sigmoid()
+        #self.sigmoid = nn.Sigmoid()
 
     def forward(self, x1, x2):
         input = torch.cat([x, x], 1)
         output = self.main(input)
         output = output.view(-1, 4*4*4*self.hidden_dim)
         output = self.linear(output)
-        return self.sigmoid(output)
+        return output
+        #return self.sigmoid(output)
 
 
 use_cuda = torch.cuda.is_available()
@@ -220,7 +221,7 @@ if use_cuda:
 if DIVERSITY_LAMBDA > 0:
     netM = Matcher()
     optimizerM = optim.Adam(netM.parameters(), lr=1e-4, betas=(0.5, 0.9))
-    diversity_criterion = nn.BCELoss()
+    diversity_criterion = nn.BCEWithLogitsLoss()
     if use_cuda:
         netM = netM.cuda(gpu)
         diversity_criterion = diversity_criterion.cuda(gpu)
@@ -403,7 +404,11 @@ for iteration in xrange(ITERS):
 
 
     if DIVERSITY_LAMBDA > 0:
-        fake1 = netG(noisev, y.detach())
+        netM.eval()
+        noise1 = torch.randn(BATCH_SIZE, 128, 1, 1)
+        if use_cuda:
+            noise1 = noise1.cuda(gpu)
+        fake1 = netG(noisev1, y.detach())
         noise2 = torch.randn(BATCH_SIZE, 128, 1, 1)
         if use_cuda:
             noise2 = noise.cuda(gpu)
@@ -432,6 +437,7 @@ for iteration in xrange(ITERS):
     optimizerG.step()
 
     if DIVERSITY_LAMBDA > 0:
+        netM.train()
         optimizerM.zero_grad()
 
         diff_match_score = netM(fake1.detach(), fake2.detach())
