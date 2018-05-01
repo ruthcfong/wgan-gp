@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 
 import torchvision.datasets as datasets
 
-from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint
+from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, DiversityLoss
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
@@ -38,14 +38,17 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-RESULTS_DIR = 'cgan_cifar10_revert'
+DIVERSITY_LAMBDA = 5e1# 1e2
+#NUM_DIVERSITY = 2
+REC_LAMBDA = 1e0
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e0_rec_1e0'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
 DEBUG=True
 if DEBUG:
     from tensorboardX import SummaryWriter
-    writer = SummaryWriter()
+    writer = SummaryWriter('runs/%s' % RESULTS_DIR)
 
 ARCH = 'alexnet'
 BLOB = 'features.10'
@@ -149,6 +152,34 @@ class Discriminator(nn.Module):
         output = self.linear(output)
         return output
 
+
+class Matcher(nn.Module):
+    def __init__(self, x_dim=3, hidden_dim=128):
+        super(Matcher, self).__init__()
+
+        self.hidden_dim=hidden_dim
+
+        main = nn.Sequential(
+            nn.Conv2d(x_dim*2, hidden_dim, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_dim, 2 * hidden_dim, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(2 * hidden_dim, 4 * hidden_dim, 3, 2, padding=1),
+            nn.LeakyReLU(),
+        )
+
+        self.main = main
+        self.linear = nn.Linear(4*4*4*hidden_dim, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x1, x2):
+        input = torch.cat([x, x], 1)
+        output = self.main(input)
+        output = output.view(-1, 4*4*4*self.hidden_dim)
+        output = self.linear(output)
+        return self.sigmoid(output)
+
+
 use_cuda = torch.cuda.is_available()
 if use_cuda:
     gpu = 0
@@ -185,6 +216,29 @@ print netD
 if use_cuda:
     netD = netD.cuda(gpu)
     netG = netG.cuda(gpu)
+
+if DIVERSITY_LAMBDA > 0:
+    netM = Matcher()
+    optimizerM = optim.Adam(netM.parameters(), lr=1e-4, betas=(0.5, 0.9))
+    diversity_criterion = nn.BCELoss()
+    if use_cuda:
+        netM = netM.cuda(gpu)
+        diversity_criterion = diversity_criterion.cuda(gpu)
+
+    #def diversity_function(x1, x2):
+    #    return torch.mean(torch.abs(x1-x2))
+    #diversity_criterion = diversity_function
+
+        #return torch.mean(torch.pow(x1 - x2, 2))
+    #diversity_criterion = DiversityLoss(use_gram=False)
+    #diversity_criterion = nn.MSELoss()
+    #if use_cuda:
+    #    diversity_criteron = diversity_criterion.cuda(gpu)
+
+if REC_LAMBDA > 0:
+    rec_criterion = nn.MSELoss()
+    if use_cuda:
+        rec_criterion = rec_criterion.cuda(gpu)
 
 one = torch.FloatTensor([1])
 mone = one * -1
@@ -339,7 +393,61 @@ for iteration in xrange(ITERS):
     G = G.mean()
     G.backward(mone)
     G_cost = -G
+
+    if REC_LAMBDA > 0:
+        fake = netG(noisev, y.detach())
+        fake_y = hook_get_acts(model, [BLOB], fake)[0]
+        rec_loss = -1 * REC_LAMBDA * rec_criterion(fake_y, y.detach())
+        rec_loss.backward()
+        rec_cost = -1 * rec_loss
+
+
+    if DIVERSITY_LAMBDA > 0:
+        fake1 = netG(noisev, y.detach())
+        noise2 = torch.randn(BATCH_SIZE, 128, 1, 1)
+        if use_cuda:
+            noise2 = noise.cuda(gpu)
+        noisev2 = autograd.Variable(noise2)
+        fake2 = netG(noisev2, y.detach())
+
+        diff_match_score = netM(fake1, fake2)
+        diff_target = autograd.Variable(torch.ones(*diff_match_score.shape).cuda(gpu) if use_cuda else
+                                   torch.ones(*diff_match_score.shape))
+        diff_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(diff_match_score, diff_target)
+        diff_loss.backward()
+
+        #fake1 = netG(noisev, y.detach())
+        same_match_score = netM(fake1, fake1)
+        same_target = autograd.Variable(torch.zeros(*diff_match_score.shape).cuda(gpu) if use_cuda else
+                                   torch.zeros(*diff_match_score.shape))
+        same_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(same_match_score, same_target)
+        same_loss.backward()
+
+        #diversity_loss = diff_loss + same_loss
+        diversity_cost = diff_loss + same_loss
+        #diversity_loss = -1 * DIVERSITY_LAMBDA * diversity_criterion(fake2,  fake.detach())
+        #diversity_loss.backward()
+        #diversity_cost = -1 * diversity_loss
+
     optimizerG.step()
+
+    if DIVERSITY_LAMBDA > 0:
+        optimizerM.zero_grad()
+
+        diff_match_score = netM(fake1.detach(), fake2.detach())
+        diff_loss = diversity_criterion(diff_match_score, diff_target)
+        diff_loss.backward()
+
+        #fake1 = netG(noisev, y.detach())
+        same_match_score = netM(fake1.detach(), fake1.detach())
+        same_loss = diversity_criterion(same_match_score, same_target)
+        same_loss.backward()
+
+        match_loss = diff_loss + same_loss
+        #diversity_loss = diff_loss + same_loss
+        #diversity_cost = diff_loss + same_loss
+
+        optimizerM.step()
 
     if iteration % PRINT_ITER == 0:
         print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
@@ -349,6 +457,11 @@ for iteration in xrange(ITERS):
         writer.add_scalar('train/D_cost', D_cost.cpu().data.numpy(), iteration)
         writer.add_scalar('train/G_cost', G_cost.cpu().data.numpy(), iteration)
         writer.add_scalar('train/wasserstein_distance', Wasserstein_D.cpu().data.numpy(), iteration)
+        if DIVERSITY_LAMBDA > 0:
+            writer.add_scalar('train/diversity_cost', diversity_cost.cpu().data.numpy(), iteration)
+            writer.add_scalar('train/M_loss', match_loss.cpu().data.numpy(), iteration)
+        if REC_LAMBDA > 0:
+            writer.add_scalar('train/rec_cost', rec_cost.cpu().data.numpy(), iteration)
         writer.add_histogram('G_acts/prepare_z', 
                 hook_get_acts(netG, ['prepare_z'], noisev, second_input=y.detach())[0], iteration)
         writer.add_histogram('G_acts/prepare_y', 
