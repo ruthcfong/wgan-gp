@@ -21,14 +21,14 @@ from torch.utils.data import DataLoader
 
 import torchvision.datasets as datasets
 
-from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint
+from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, set_gpu
 
 from networks import define_G, define_D
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
 # extracted files here!
-DATA_DIR = '/data/datasets/ILSVRC2012'
+DATA_DIR = '/scratch/local/ssd/ruthfong/ILSVRC2012'
 if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_cifar.py!')
 
@@ -36,24 +36,23 @@ Z_DIM = 100
 HIDDEN_DIM = 64 # This overfits substantially; you're probably better off with 64
 LAMBDA = 10 # Gradient penalty lambda hyperparameter
 CRITIC_ITERS = 5 # How many critic iterations per generator iteration
-BATCH_SIZE = 32 # Batch size
-NUM_EXAMPLES = 5
+BATCH_SIZE = 48 # Batch size
+NUM_EXAMPLES = 6
 ITERS = 200000 # How many generator iterations to train for
 D_NAME = 'dcgan_nobn_basic'
 G_NAME = 'resnet_6blocks'
 PRINT_ITER = 5 # How often to print to screen
 SAVE_ITER = 50
 ARCH = 'alexnet'
-BLOB = 'features.10'
+BLOB = 'features.9'
 CHECKPOINT = None
 SIZE = 128
 RESULTS_DIR = 'cgan_imagenet_%s_%s_%d_G_%s_D_%s_zdim_%d_hdim_%d' % (ARCH, BLOB, SIZE, G_NAME, D_NAME, Z_DIM, HIDDEN_DIM)
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
-use_cuda = torch.cuda.is_available()
-if use_cuda:
-    gpu = 0
+use_cuda = set_gpu(3)
+gpu=0
 
 # Dataset iterator
 preprocess = torchvision.transforms.Compose([
