@@ -21,6 +21,8 @@ from torch.utils.data import DataLoader
 
 import torchvision.datasets as datasets
 
+from networks import init_weights
+
 from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint
 
 # Download CIFAR-10 (Python version) at
@@ -38,7 +40,8 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-RESULTS_DIR = 'cgan_cifar10_logging'
+INIT_TYPE = 'normal'
+RESULTS_DIR = 'cgan_cifar10_logging_init_type_%s' % INIT_TYPE 
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 DEBUG=True
@@ -182,6 +185,9 @@ y_shape = hook_get_shapes(model, [BLOB], x)[0]
 
 netG = Generator(y_shape)
 netD = Discriminator(y_shape[1])
+
+init_weights(netG, INIT_TYPE)
+init_weights(netD, INIT_TYPE)
 print netG
 print netD
 
@@ -366,6 +372,10 @@ for iteration in xrange(ITERS):
         writer.add_scalar('train/time', time.time() - start_time, iteration)
         writer.add_scalar('train/G_cost', G_cost.cpu().data.numpy(), iteration)
         writer.add_scalar('train/wasserstein_distance', Wasserstein_D.cpu().data.numpy(), iteration)
+        writer.add_histogram('G_acts/prepare_z', 
+                hook_get_acts(netG, ['prepare_z'], noisev, second_input=y.detach())[0], frame)
+        writer.add_histogram('G_acts/prepare_y', 
+                hook_get_acts(netG, ['prepare_y'], noisev, second_input=y.detach())[0], frame)
 
     # Write logs and save samples
     #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
@@ -392,12 +402,6 @@ for iteration in xrange(ITERS):
             _dev_disc_cost = -D.mean().cpu().data.numpy()
             dev_disc_costs.append(_dev_disc_cost)
         print('Test [%d/%d] Avg D: %.4f' % (iteration+1, ITERS, np.mean(dev_disc_costs)))
-        if DEBUG:
-            writer.add_scalar('test/D_cost', np.mean(dev_disc_costs), iteration)
-            for name, param in netG.named_parameters():
-                writer.add_histogram('G/%s' % name, param, iteration)
-            for name, param in netD.named_parameters():
-                writer.add_histogram('D/%s' % name, param, iteration)
         #lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
 
         imgs, _ = next(iter(dev_loader))
@@ -422,6 +426,12 @@ for iteration in xrange(ITERS):
                          },
                          '%s/D_checkpoint.pth.tar' % RESULTS_DIR)
 
+        if DEBUG:
+            writer.add_scalar('test/D_cost', np.mean(dev_disc_costs), iteration)
+            for name, param in netG.named_parameters():
+                writer.add_histogram('G/%s' % name, param, iteration)
+            for name, param in netD.named_parameters():
+                writer.add_histogram('D/%s' % name, param, iteration)
     # Save logs every 100 iters
     #if (iteration < 5) or (iteration % 100 == 99):
     #    lib.plot.flush()
