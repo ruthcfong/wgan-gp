@@ -41,7 +41,7 @@ PRINT_ITER = 10 # How often to print to screen
 DIVERSITY_LAMBDA = 5e1# 1e2
 #NUM_DIVERSITY = 2
 REC_LAMBDA = 1e1
-RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1'
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1_logits_take2'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -310,6 +310,7 @@ def generate_samples(frame, netG, real_imgs, model):
     torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
     if DEBUG:
         writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), nrow=num_examples, normalize=True), frame)
+        writer.add_scalar('test/vary_z_D', torch.norm(x[1:] - x[:-1]).data.cpu().numpy(), frame)
 
 # For calculating inception score
 def get_inception_score(G, ):
@@ -408,6 +409,7 @@ for iteration in xrange(ITERS):
         noise1 = torch.randn(BATCH_SIZE, 128, 1, 1)
         if use_cuda:
             noise1 = noise1.cuda(gpu)
+        noisev1 = autograd.Variable(noise1)
         fake1 = netG(noisev1, y.detach())
         noise2 = torch.randn(BATCH_SIZE, 128, 1, 1)
         if use_cuda:
@@ -456,9 +458,9 @@ for iteration in xrange(ITERS):
         optimizerM.step()
 
     if iteration % PRINT_ITER == 0:
-        print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
+        print('Train [%d/%d] D: %.4f G: %.4f W: %.4f M: %.6f T: %.2f' % (iteration+1, ITERS, 
               D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
-              Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
+              Wasserstein_D.cpu().data.cpu().numpy()[0], match_loss.data.cpu().numpy()[0], time.time() - start_time))
 
         writer.add_scalar('train/D_cost', D_cost.cpu().data.numpy(), iteration)
         writer.add_scalar('train/G_cost', G_cost.cpu().data.numpy(), iteration)
