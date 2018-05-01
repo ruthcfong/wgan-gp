@@ -38,10 +38,13 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-RESULTS_DIR = 'cgan_cifar10_z_linear'
+RESULTS_DIR = 'cgan_cifar10_logging'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
-
+DEBUG=True
+if DEBUG:
+    from tensorboardX import SummaryWriter
+    writer = SummaryWriter()
 ARCH = 'alexnet'
 BLOB = 'features.10'
 CHECKPOINT = None
@@ -58,10 +61,10 @@ class Generator(nn.Module):
         self.hidden_dim = hidden_dim
 
         self.prepare_z = nn.Sequential(
-                nn.Linear(z_dim, 2 * 4 * 4 * hidden_dim),
-                nn.BatchNorm2d(2 * 4 * 4 * hidden_dim),
-                #nn.ConvTranspose2d(z_dim, hidden_dim * 2, 4, stride=2),
-                #nn.BatchNorm2d(hidden_dim * 2),
+                #nn.Linear(z_dim, 2 * 4 * 4 * hidden_dim),
+                #nn.BatchNorm2d(2 * 4 * 4 * hidden_dim),
+                nn.ConvTranspose2d(z_dim, hidden_dim * 2, 4, stride=2),
+                nn.BatchNorm2d(hidden_dim * 2),
                 nn.ReLU(inplace=True)
         )
 
@@ -105,7 +108,7 @@ class Generator(nn.Module):
 
     def forward(self, z, y):
         z = self.prepare_z(z)
-        z = z.view(-1, 2 * self.hidden_dim, 4, 4)
+        #z = z.view(-1, 2 * self.hidden_dim, 4, 4)
         if len(y.shape) == 2:
             y = y.unsqueeze(2).unsqueeze(3)
         y = self.prepare_y(y)
@@ -219,17 +222,20 @@ def calc_gradient_penalty(netD, real_data, fake_data, y):
     return gradient_penalty
 
 # For generating samples
+fixed_noise_128 = torch.randn(BATCH_SIZE, 128, 1, 1)
+if use_cuda:
+    fixed_noise_128 = fixed_noise_128.cuda(gpu)
+noisev = autograd.Variable(fixed_noise_128, volatile=True)
 def generate_image(frame, netG, y, real_data):
-    fixed_noise_128 = torch.randn(BATCH_SIZE, 128)
-    if use_cuda:
-        fixed_noise_128 = fixed_noise_128.cuda(gpu)
-    noisev = autograd.Variable(fixed_noise_128, volatile=True)
     samples = netG(noisev, y.detach())
     samples = samples.view(-1, 3, 32, 32)
     #samples = samples.mul(0.5).add(0.5)
     #samples = samples.cpu().data.numpy()
     filename = os.path.join(RESULTS_DIR, str(frame+1) + ".jpg")
     torchvision.utils.save_image(torch.cat((samples.data.cpu(), real_data.data.cpu()), dim=0), filename, normalize=True)
+    if DEBUG:
+        writer.add_image('samples/fixed_z', torchvision.utils.make_grid(torch.cat((samples.data.cpu(), real_data.data.cpu())), 
+                         normalize=True, scale_each=True), frame)
 
     #lib.save_images.save_images(samples, './tmp/cifar10/samples_{}.jpg'.format(frame))
 
@@ -238,8 +244,8 @@ def generate_samples(frame, netG, real_imgs, model):
     x = torch.FloatTensor(num_examples ** 2, real_imgs.shape[1], real_imgs.shape[2], real_imgs.shape[3])
     x = autograd.Variable(x.cuda() if use_cuda else x)
 
-    fixed_noise = torch.FloatTensor(num_examples, 128).normal_(0, 1)
-    z = torch.FloatTensor(num_examples ** 2, 128)
+    fixed_noise = torch.FloatTensor(num_examples, 128, 1, 1).normal_(0, 1)
+    z = torch.FloatTensor(num_examples ** 2, 128, 1, 1)
     z = autograd.Variable(z.cuda() if use_cuda else z)
 
     for i in range(num_examples):
@@ -253,6 +259,10 @@ def generate_samples(frame, netG, real_imgs, model):
     x[num_examples:] = gen_x
     filename = os.path.join(RESULTS_DIR, 'vary_z_%d.jpg' % (frame+1))
     torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
+    if DEBUG:
+        writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), 
+                         nrow=num_examples, normalize=True, scale_each=True),
+                         frame)
 
 # For calculating inception score
 def get_inception_score(G, ):
@@ -306,7 +316,7 @@ for iteration in xrange(ITERS):
         D_real.backward(mone)
 
         # train with fake
-        noise = torch.randn(BATCH_SIZE, 128)
+        noise = torch.randn(BATCH_SIZE, 128, 1, 1)
         if use_cuda:
             noise = noise.cuda(gpu)
         noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
@@ -332,7 +342,7 @@ for iteration in xrange(ITERS):
         p.requires_grad = False  # to avoid computation
     netG.zero_grad()
 
-    noise = torch.randn(BATCH_SIZE, 128)
+    noise = torch.randn(BATCH_SIZE, 128, 1, 1)
     if use_cuda:
         noise = noise.cuda(gpu)
     noisev = autograd.Variable(noise)
@@ -351,6 +361,11 @@ for iteration in xrange(ITERS):
         print('Train [%d/%d] D: %.4f G: %.4f W: %.4f T: %.4f' % (iteration+1, ITERS, 
               D_cost.data.cpu().numpy()[0], G_cost.data.cpu().numpy()[0],
               Wasserstein_D.data.cpu().numpy()[0], time.time() - start_time))
+    if DEBUG:
+        writer.add_scalar('train/D_cost', D_cost.cpu().data.numpy(), iteration)
+        writer.add_scalar('train/time', time.time() - start_time, iteration)
+        writer.add_scalar('train/G_cost', G_cost.cpu().data.numpy(), iteration)
+        writer.add_scalar('train/wasserstein_distance', Wasserstein_D.cpu().data.numpy(), iteration)
 
     # Write logs and save samples
     #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
@@ -377,6 +392,12 @@ for iteration in xrange(ITERS):
             _dev_disc_cost = -D.mean().cpu().data.numpy()
             dev_disc_costs.append(_dev_disc_cost)
         print('Test [%d/%d] Avg D: %.4f' % (iteration+1, ITERS, np.mean(dev_disc_costs)))
+        if DEBUG:
+            writer.add_scalar('test/D_cost', np.mean(dev_disc_costs), iteration)
+            for name, param in netG.named_parameters():
+                writer.add_histogram('G/%s' % name, param, iteration)
+            for name, param in netD.named_parameters():
+                writer.add_histogram('D/%s' % name, param, iteration)
         #lib.plot.plot('./tmp/cifar10/dev disc cost', np.mean(dev_disc_costs))
 
         imgs, _ = next(iter(dev_loader))
