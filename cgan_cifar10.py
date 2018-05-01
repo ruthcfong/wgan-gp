@@ -38,9 +38,14 @@ BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
-RESULTS_DIR = 'cgan_cifar10'
+RESULTS_DIR = 'cgan_cifar10_revert'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
+
+DEBUG=True
+if DEBUG:
+    from tensorboardX import SummaryWriter
+    writer = SummaryWriter()
 
 ARCH = 'alexnet'
 BLOB = 'features.10'
@@ -248,6 +253,8 @@ def generate_samples(frame, netG, real_imgs, model):
     x[num_examples:] = gen_x
     filename = os.path.join(RESULTS_DIR, 'vary_z_%d.jpg' % (frame+1))
     torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
+    if DEBUG:
+        writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), nrow=num_examples, normalize=True), frame)
 
 # For calculating inception score
 def get_inception_score(G, ):
@@ -334,10 +341,18 @@ for iteration in xrange(ITERS):
     G_cost = -G
     optimizerG.step()
 
-    if iteration+1 % PRINT_ITER == 0:
+    if iteration % PRINT_ITER == 0:
         print('Train [%d/%d] D: %.4f G: %.4f W: %4f T: %.2f' % (iteration+1, ITERS, 
               D_cost.cpu().data.numpy()[0], G_cost.cpu().data.numpy()[0],
               Wasserstein_D.cpu().data.cpu().numpy()[0], time.time() - start_time))
+
+        writer.add_scalar('train/D_cost', D_cost.cpu().data.numpy(), iteration)
+        writer.add_scalar('train/G_cost', G_cost.cpu().data.numpy(), iteration)
+        writer.add_scalar('train/wasserstein_distance', Wasserstein_D.cpu().data.numpy(), iteration)
+        writer.add_histogram('G_acts/prepare_z', 
+                hook_get_acts(netG, ['prepare_z'], noisev, second_input=y.detach())[0], iteration)
+        writer.add_histogram('G_acts/prepare_y', 
+                hook_get_acts(netG, ['prepare_y'], noisev, second_input=y.detach())[0], iteration)
 
     # Write logs and save samples
     #lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
@@ -351,7 +366,7 @@ for iteration in xrange(ITERS):
         #lib.plot.plot('./tmp/cifar10/inception score', inception_score[0])
 
     # Calculate dev loss and generate samples every 100 iters
-    if iteration+1 % 1000 == 0:
+    if iteration % 100 == 0:
         dev_disc_costs = []
         for imgs, _ in dev_loader:
             # imgs = preprocess(images)
@@ -384,6 +399,13 @@ for iteration in xrange(ITERS):
                          'iteration': iteration+1,
                          },
                          '%s/D_checkpoint.pth.tar' % RESULTS_DIR)
+
+        if DEBUG:
+            writer.add_scalar('test/D_cost', np.mean(dev_disc_costs), iteration)
+            for name, param in netG.named_parameters():
+                writer.add_histogram('G/%s' % name, param, iteration)
+            for name, param in netG.named_parameters():
+                writer.add_histogram('D/%s' % name, param, iteration)
 
     # Save logs every 100 iters
     #if (iteration < 5) or (iteration % 100 == 99):
