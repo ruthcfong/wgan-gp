@@ -41,7 +41,7 @@ PRINT_ITER = 10 # How often to print to screen
 DIVERSITY_LAMBDA = 5e1# 1e2
 #NUM_DIVERSITY = 2
 REC_LAMBDA = 1e1
-RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1_logits_take2'
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_matching_5e1_rec_1e1_logits_testing'
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -430,6 +430,9 @@ for iteration in xrange(ITERS):
                                    torch.zeros(*diff_match_score.shape))
         same_loss = 0.5 * DIVERSITY_LAMBDA * diversity_criterion(same_match_score, same_target)
         same_loss.backward()
+        if DEBUG and iteration % PRINT_ITER == 0:
+                writer.add_histogram('train/diff_output', diff_match_score.data.cpu().numpy(), iteration)
+                writer.add_histogram('train/same_output', same_match_score.data.cpu().numpy(), iteration)
 
         #diversity_loss = diff_loss + same_loss
         diversity_cost = diff_loss + same_loss
@@ -443,9 +446,13 @@ for iteration in xrange(ITERS):
         netM.train()
         optimizerM.zero_grad()
 
-        diff_match_score = netM(fake1.detach(), fake2.detach())
+        new_fake1 = fake1.detach()
+        new_fake2 = fake2.detach()
+        diff_match_score = netM(new_fake1, new_fake2)
         diff_loss = diversity_criterion(diff_match_score, diff_target)
         diff_loss.backward()
+        if DEBUG and iteration % PRINT_ITER == 0:
+            writer.add_histogram('train/grad_weights', netM.main[0].weight.grad, iteration)
 
         #fake1 = netG(noisev, y.detach())
         same_match_score = netM(fake1.detach(), fake1.detach())
@@ -528,6 +535,9 @@ for iteration in xrange(ITERS):
                 writer.add_histogram('G/%s' % name, param, iteration)
             for name, param in netG.named_parameters():
                 writer.add_histogram('D/%s' % name, param, iteration)
+            if DIVERSITY_LAMBDA > 0:
+                for name, param in netM.named_parameters():
+                    writer.add_histogram('M/%s' % name, param, iteration)
 
     # Save logs every 100 iters
     #if (iteration < 5) or (iteration % 100 == 99):
