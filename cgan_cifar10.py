@@ -310,7 +310,8 @@ def generate_samples(frame, netG, real_imgs, model):
     torchvision.utils.save_image(x.data.cpu(), filename, nrow=num_examples, normalize=True)
     if DEBUG:
         writer.add_image('samples/vary_z', torchvision.utils.make_grid(x.data.cpu(), nrow=num_examples, normalize=True), frame)
-        writer.add_scalar('test/vary_z_D', torch.norm(x[1:] - x[:-1]).data.cpu().numpy(), frame)
+        x = x[num_examples:].view(num_examples, num_examples-1, x.shape[1], x.shape[2], x.shape[3])
+        writer.add_scalar('test/vary_z_D', torch.norm(x[:, 1:] - x[:, :-1]).data.cpu().numpy(), frame)
 
 # For calculating inception score
 def get_inception_score(G, ):
