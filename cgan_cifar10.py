@@ -22,12 +22,13 @@ from torch.utils.data import DataLoader
 
 import torchvision.datasets as datasets
 
-from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, DiversityLoss, ContrastiveLoss
+from pytorch_utils import get_model, hook_get_shapes, hook_get_acts, save_checkpoint, DiversityLoss, ContrastiveLoss, set_gpu
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
 # extracted files here!
-DATA_DIR = '/data/datasets/cifar10'
+#DATA_DIR = '/data/datasets/cifar10'
+DATA_DIR = './cifar10'
 if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_cifar.py!')
 
@@ -42,7 +43,8 @@ PRINT_ITER = 10 # How often to print to screen
 DIVERSITY_LAMBDA = 1e1# 1e2
 #NUM_DIVERSITY = 2
 REC_LAMBDA = 1e1
-RESULTS_DIR = 'cgan_cifar10_revert_diversity_contrastive_dropout_1e1_rec_1e1_gan_adam_dense_vary_z_tracking_fixedd_3'
+gpu_i = 2
+RESULTS_DIR = 'cgan_cifar10_revert_diversity_contrastive_dropout_1e1_rec_1e1_gan_adam_dense_vary_z_tracking_fixedd_%d' % gpu_i
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 
@@ -208,7 +210,8 @@ class Matcher(nn.Module):
         #return self.sigmoid(output)
 
 
-use_cuda = torch.cuda.is_available()
+#use_cuda = torch.cuda.is_available()
+use_cuda = set_gpu(gpu_i)
 if use_cuda:
     gpu = 0
 
