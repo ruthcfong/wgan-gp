@@ -41,16 +41,17 @@ ITERS = 200000 # How many generator iterations to train for
 OUTPUT_hidden_dim = 3072 # Number of pixels in CIFAR10 (3*32*32)
 PRINT_ITER = 10 # How often to print to screen
 INIT_TYPE = 'normal'
-RESULTS_DIR = 'cgan_cifar10_logging_init_type_%s' % INIT_TYPE 
+ARCH = 'alexnet'
+BLOB = 'features.11'
+CHECKPOINT= '~/generate_inversion/checkpoints/cifar10_alexnet_32_best_bs_128_sgd_1e-1_decay_20_epochs_60.pth.tar'
+RESULTS_DIR = 'cgan/cifar10/%s/%s' % (ARCH, BLOB)
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
 DEBUG=True
 if DEBUG:
     from tensorboardX import SummaryWriter
     writer = SummaryWriter()
-ARCH = 'alexnet'
-BLOB = 'features.10'
-CHECKPOINT = None
+#CHECKPOINT = None
 
 class Generator(nn.Module):
     def __init__(self, y_shape, z_dim=128, x_dim=3, hidden_dim=128):
@@ -179,7 +180,7 @@ dev_loader = DataLoader(datasets.CIFAR10(DATA_DIR, train=False, transform=prepro
 
 x = gen.next()
 x = autograd.Variable(x.cuda() if use_cuda else x)
-model = get_model(arch=ARCH, dataset='cifar10', pretrained=True, adaptive_pool=True,
+model = get_model(arch=ARCH, dataset='cifar10', pretrained=True, adaptive_pool=False,
                   checkpoint_path=CHECKPOINT, cuda=use_cuda)
 y_shape = hook_get_shapes(model, [BLOB], x)[0]
 
